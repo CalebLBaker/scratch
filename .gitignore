@@ -1,0 +1,6 @@
+*.iso
+*.elf
+*.vdi
+assemble
+.attach
+.vm
