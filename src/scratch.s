@@ -7,5 +7,7 @@ dd 0x17ADAF1A
 dw 0
 dw 0
 dd 8
+
+# Entry point
 _start:
 jmp _start

@@ -1,5 +1,5 @@
 | Command Name  | Possible Containing Package   |
-|_______________|_______________________________|
+|---------------|-------------------------------|
 | rm            | coreutils                     |
 | echo          | coreutils                     |
 | touch         | coreutils                     |
