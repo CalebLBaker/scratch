@@ -88,6 +88,7 @@ typedef struct Block {
 	size_t  line_num;	// Line number for first instruction of the block
 	int32_t operand;	// Single instruction only: encoded operand
 	uint8_t opcode;		// Opcode of the instruction; BLOCK for a multi-instruction block
+	bool    long_mode;	// true for 64 bit mode, false for 32 bit mode
 } Block;
 
 typedef struct String {
@@ -229,10 +230,10 @@ Block* makeRoom(Block *curr_block, size_t line_num, size_t size) {
 
 size_t setJmpOperand(Block *curr_block) {
 	curr_block->operand = ((Block*)(curr_block->data))->address - curr_block->address - curr_block->size;
-	if (curr_block->operand > INT8_MAX) {
-		size_t ret = curr_block->opcode == SHORT_JMP ? 1 : 0;
+	if (curr_block->operand > INT8_MAX && curr_block->opcode == SHORT_JMP) {
+		size_t ret = curr_block->long_mode ? 3 : 1;
 		curr_block->opcode = NEAR_JMP;
-		curr_block->size = 2;
+		curr_block->size += ret;
 		return ret;
 	}
 	return 0;
@@ -277,6 +278,7 @@ int main(int argc, char **argv) {
 	char *buffer = NULL;
 	size_t buffer_size = 0;
 	size_t line_num = 0;
+	bool long_mode = true;
 
 	for (ssize_t n = getline(&buffer, &buffer_size, infile); n >= 1; n = getline(&buffer, &buffer_size, infile)) {
 
@@ -319,6 +321,7 @@ int main(int argc, char **argv) {
 			curr_block->size = 2;
 			curr_block->opcode = SHORT_JMP;
 			curr_block->line_num = line_num;
+			curr_block->long_mode = long_mode;
 			
 			String target;
 			getIdentifier(operands, &target);
@@ -354,6 +357,30 @@ int main(int argc, char **argv) {
 				fwrite((void*)opcode.d, sizeof(char), opcode.len, stderr);
 				fputs("\"\n", stderr);
 				return SYNTAX_ERROR;
+			}
+		}
+
+		// Check if it's an assembly directive
+		else if (n > offset && *operands == '[') {
+			operands++;
+			getIdentifier(operands, &opcode);
+			if (EQUALS(opcode, "BITS", 4)) {
+				operands = opcode.d + opcode.len;
+				uint8_t mode;
+				if (sscanf(operands, " %hhi", &mode) != 1) {
+					fprintf(stderr, "Assembler Error (%s:%lu): Directive \"BITS\" requires an argument\n", infile_name, line_num);
+					return SYNTAX_ERROR;
+				}
+				if (mode == 32) {
+					long_mode = false;
+				}
+				else if (mode == 64) {
+					long_mode = true;
+				}
+				else {
+					fprintf(stderr, "Assembler Error (%s:%lu): %hhi bit mode is not supported\n", infile_name, line_num, mode);
+					return SEMANTIC_ERROR;
+				}
 			}
 		}
 	}
@@ -460,7 +487,12 @@ int main(int argc, char **argv) {
 			}
 			case (NEAR_JMP) : {
 				fwrite((void*) &(curr_block->opcode), sizeof(uint8_t), 1, outfile);
-				fwrite((void*) &(curr_block->operand), sizeof(int16_t), 1, outfile);
+				if (curr_block->long_mode) {
+					fwrite((void*) &(curr_block->operand), sizeof(int32_t), 1, outfile);
+				}
+				else {
+					fwrite((void*) &(curr_block->operand), sizeof(int16_t), 1, outfile);
+				}
 				break;
 			}
 		}
