@@ -1,3 +1,6 @@
+root/boot/scratch.elf: src/scratch.s assemble
+	./assemble $< -o $@
+
 all: .attach
 
 run: .attach
@@ -19,9 +22,6 @@ scratch.vdi: scratch.iso .deleteDisk.sh .vm
 
 scratch.iso: root/boot/grub/grub.cfg root/boot/scratch.elf
 	grub-mkrescue -o $@ root
-
-root/boot/scratch.elf: src/scratch.s assemble
-	./assemble $< -o $@
 
 assemble: tools/assembler.c
 	gcc $< -o $@

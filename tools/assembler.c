@@ -13,7 +13,6 @@
 #define FEATURE_NOT_IMPLEMENTED_YET -5
 
 #define ELF_MAGIC_NUMBER 0x464C457F
-#define THIRTY_TWO_BIT 1
 #define SIXTY_FOUR_BIT 2
 #define LITTLE 1
 #define ORIGINAL_ELF 1
@@ -27,16 +26,20 @@
 #define R_X 5
 #define ET_EXEC 2
 
-#define TEXT_SIZE_GUESS 0x1000
+#define BLOCK_START_SIZE 0x40
+
 #define LABEL_MAP_START_SIZE 0x40
 #define LABEL_MAP_START_MASK 0x3F
 #define LABEL_MAX_LOAD_FACTOR 0.9
 #define LABEL_RESIZE_SHIFT 2
 #define LABEL_RESIZE_MASK 3
 
-#define START_NUM_LABEL_REFERENCE 0x80
+#define BLOCK 0
+#define SHORT_JMP 0xEB
+#define NEAR_JMP 0xE9
 
-#define JMP_REL8 0xEB
+#define EQUALS(left,right,size) ((left).len == (size) && !strncmp((left).d, (right), (size)))
+#define MAX(a,b) ((a)<(b) ? (b) : (a));
 
 typedef struct ElfHeader {
 	uint32_t    ident_mag;
@@ -74,15 +77,28 @@ typedef struct ElfProgramHeader {
 	uint64_t    align;
 } ElfProgramHeader;
 
+// Can represent either a block of multiple instructions
+// or a single control flow instruction
+typedef struct Block {
+	void   *next;		// Pointer to next block
+	void   *data;		// For multi-instruction blocks, the encoded instructions; For single instructions, the target label
+	size_t  capacity;	// Capacity of buffer pointed to by data
+	size_t  size;		// Size of the block
+	size_t  address;	// Starting address of the block
+	size_t  line_num;	// Line number for first instruction of the block
+	int32_t operand;	// Single instruction only: encoded operand
+	uint8_t opcode;		// Opcode of the instruction; BLOCK for a multi-instruction block
+} Block;
+
 typedef struct String {
 	char   *d;
 	size_t  len;
 } String;
 
 typedef struct Label {
-	char   *d;
-	size_t  len;
-	size_t  index;
+	Block  *target;
+	char   *name;
+	size_t  name_len;
 } Label;
 
 typedef struct MapEntry {
@@ -97,29 +113,6 @@ typedef struct LabelMap {
 	size_t      max_probe_length;
 } LabelMap;
 
-typedef struct LabelReference {
-	String  label;
-	size_t  pc;
-	size_t  index;
-	size_t  line_num;
-	uint8_t size;
-} LabelReference;
-
-typedef struct LabelReferenceContainer {
-	LabelReference *data;
-	size_t          capacity;
-	size_t          size;
-} LabelReferenceContainer;
-
-void insertReference(LabelReferenceContainer *cont, LabelReference *ref) {
-	if (cont->size == cont->capacity) {
-		cont->capacity <<= 1;
-		cont->data = realloc(cont->data, cont->capacity);
-	}
-	cont->data[cont->size] = *ref;
-	cont->size++;
-}
-
 size_t hashString(char *d, size_t len) {
 	size_t hash = 5381;
 	for (size_t i = 0; i < len; i++) {
@@ -128,13 +121,29 @@ size_t hashString(char *d, size_t len) {
 	return hash;
 }
 
+void init(LabelMap *m) {
+	m->data = calloc(LABEL_MAP_START_SIZE, sizeof(MapEntry));
+	m->mask = LABEL_MAP_START_MASK;
+	m->num_entries = 0;
+	m->max_probe_length = 0;
+}
+
+void freeData(LabelMap *m) {
+	for (size_t i = 0; i <= m->mask; i++) {
+		if (m->data[i].l.name) {
+			free(m->data[i].l.name);
+		}
+	}
+	free(m->data);
+}
+
 Label* get(LabelMap *map, String *l) {
 	size_t mask = map->mask;
 	size_t pos = hashString(l->d, l->len) & mask;
 	MapEntry *d = map->data;
 	size_t max_dist = map->max_probe_length;
-	for (size_t distance = 0; d[pos].l.d && distance <= max_dist; distance++) {
-		if (d[pos].l.len == l->len || !strncmp(d[pos].l.d, l->d, l->len)) {
+	for (size_t distance = 0; d[pos].l.name && distance <= max_dist; distance++) {
+		if (EQUALS(*l, d[pos].l.name, l->len)) {
 			return &(d[pos].l);
 		}
 		pos = (pos+1) & mask;
@@ -147,7 +156,7 @@ void basicInsert(LabelMap *map, Label *entry, size_t hash) {
 	MapEntry *d = map->data;
 	size_t pos = hash & mask;
 	for (size_t distance = 0;; distance++) {
-		if (d[pos].l.d == NULL) {
+		if (d[pos].l.name == NULL) {
 			d[pos].l = *entry;
 			d[pos].hash = hash;
 			if (distance > map->max_probe_length) {
@@ -179,13 +188,13 @@ void insert(LabelMap *map, Label *entry) {
 		map->data = calloc(map->mask+1, sizeof(MapEntry));
 		map->max_probe_length = 0;
 		for (size_t i = 0; i <= old_mask; i++) {
-			if (old_data[i].l.d) {
+			if (old_data[i].l.name) {
 				basicInsert(map, &(old_data[i].l), old_data[i].hash);
 			}
 		}
 		free(old_data);
 	}
-	size_t hash = hashString(entry->d, entry->len);
+	size_t hash = hashString(entry->name, entry->name_len);
 	basicInsert(map, entry, hash);
 }
 
@@ -197,12 +206,36 @@ size_t getIdentifier(char *buffer, String *id) {
 	return ret;
 }
 
-size_t makeBigEnough(uint8_t **buf, size_t size, size_t cap) {
-	if (size > cap) {
-		cap <<= 1;
-		*buf = (uint8_t*)realloc((void*)(*buf), cap);
+Block* makeRoom(Block *curr_block, size_t line_num, size_t size) {
+	if (curr_block->opcode == BLOCK) {
+		size_t new_capacity = MAX(curr_block->capacity << 1, BLOCK_START_SIZE);
+		curr_block->data = realloc(curr_block->data, new_capacity);
+		curr_block->capacity = new_capacity;
 	}
-	return cap;
+	else if (curr_block->capacity < curr_block->size + size) {
+		Block *n = malloc(sizeof(Block));
+		n->next = NULL;
+		n->data = malloc(BLOCK_START_SIZE);
+		n->capacity = BLOCK_START_SIZE;
+		n->address = curr_block->address + curr_block->size;
+		n->size = 0;
+		n->opcode = BLOCK;
+		n->line_num = line_num;
+		curr_block->next = n;
+		return n;
+	}
+	return curr_block;
+}
+
+size_t setJmpOperand(Block *curr_block) {
+	curr_block->operand = ((Block*)(curr_block->data))->address - curr_block->address - curr_block->size;
+	if (curr_block->operand > INT8_MAX) {
+		size_t ret = curr_block->opcode == SHORT_JMP ? 1 : 0;
+		curr_block->opcode = NEAR_JMP;
+		curr_block->size = 2;
+		return ret;
+	}
+	return 0;
 }
 
 int main(int argc, char **argv) {
@@ -235,20 +268,11 @@ int main(int argc, char **argv) {
 		return IO_ERROR;
 	}
 
-	size_t text_capacity = TEXT_SIZE_GUESS;
-	uint8_t *text_segment = (uint8_t*) malloc(text_capacity);
-	size_t text_size = 0;
-
-	LabelReferenceContainer refs;
-	refs.capacity = START_NUM_LABEL_REFERENCE;
-	refs.data = malloc(refs.capacity * sizeof(LabelReference));
-	refs.size = 0;
+	Block *text_segment = calloc(1, sizeof(Block));
+	Block *curr_block = text_segment;
 
 	LabelMap labels;
-	labels.data = calloc(LABEL_MAP_START_SIZE, sizeof(MapEntry));
-	labels.mask = LABEL_MAP_START_MASK;
-	labels.num_entries = 0;
-	labels.max_probe_length = 0;
+	init(&labels);
 
 	char *buffer = NULL;
 	size_t buffer_size = 0;
@@ -262,39 +286,45 @@ int main(int argc, char **argv) {
 		char *operands = opcode.d + opcode.len;
 
 		// dw
-		if (opcode.len == 2 && !strncmp(opcode.d, "dw", 2)) {
-			text_capacity = makeBigEnough(&text_segment, text_size + 2, text_capacity);
-			if (sscanf(operands, " %hi", (uint16_t*)(text_segment + text_size)) != 1) {
+		if (EQUALS(opcode,"dw",2)) {
+			curr_block = makeRoom(curr_block, line_num, 2);
+			if (sscanf(operands, " %hi", (uint16_t*)(curr_block->data + curr_block->size)) != 1) {
 				fprintf(stderr, "Assembler Error (%s:%lu): Directive \"dw\" requires an argument\n", infile_name, line_num);
 				return SYNTAX_ERROR;
 			}
-			text_size += 2;
+			curr_block->size += 2;
 		}
 
 		// dd
-		else if (opcode.len == 2 && !strncmp(opcode.d, "dd", 2)) {
-			text_capacity = makeBigEnough(&text_segment, text_size + 4, text_capacity);
-			if (sscanf(operands, " %i", (uint32_t*)(text_segment + text_size)) != 1) {
+		else if (EQUALS(opcode,"dd",2)) {
+			curr_block = makeRoom(curr_block, line_num, 4);
+			if (sscanf(operands, " %i", (uint32_t*)(curr_block->data + curr_block->size)) != 1) {
 				fprintf(stderr, "Assembler Error (%s:%lu): Directive \"dd\" requires an argument\n", infile_name, line_num);
 				return SYNTAX_ERROR;
 			}
-			text_size += 4;
+			curr_block->size += 4;
 		}
 
 		// jmp
-		else if (opcode.len == 3 && !strncmp(opcode.d, "jmp", 3)) {
-			text_capacity = makeBigEnough(&text_segment, text_size + 2, text_capacity);
-			LabelReference ref;
-			size_t tgt_offset = getIdentifier(operands, &ref.label);
-			ref.label.d = malloc(ref.label.len * sizeof(char));
-			memcpy(ref.label.d, operands+tgt_offset, ref.label.len);
-			ref.pc = text_size + 2;
-			ref.index = text_size + 1;
-			ref.line_num = line_num;
-			ref.size = 1;
-			insertReference(&refs, &ref);
-			text_segment[text_size] = JMP_REL8;
-			text_size += 2;
+		else if (EQUALS(opcode,"jmp",3)) {
+
+			if (curr_block->capacity) {
+				Block *new_block = malloc(sizeof(Block));
+				new_block->next = NULL;
+				new_block->address = curr_block->address + curr_block->size;
+				curr_block->next = new_block;
+				curr_block = new_block;
+			}
+
+			curr_block->size = 2;
+			curr_block->opcode = SHORT_JMP;
+			curr_block->line_num = line_num;
+			
+			String target;
+			getIdentifier(operands, &target);
+			curr_block->capacity = target.len;
+			curr_block->data = malloc(target.len);
+			memcpy(curr_block->data, target.d, target.len);
 		}
 
 		// Not recognized instruction, check if it's a label
@@ -302,10 +332,21 @@ int main(int argc, char **argv) {
 			size_t remaining = n - offset - opcode.len;
 			if (remaining && opcode.d[opcode.len] == ':') {
 				Label new_label;
-				new_label.d = malloc(opcode.len);
-				memcpy(new_label.d, opcode.d, opcode.len);
-				new_label.len = opcode.len;
-				new_label.index = text_size;
+				new_label.name = malloc(opcode.len);
+				memcpy(new_label.name, opcode.d, opcode.len);
+				new_label.name_len = opcode.len;
+				Block *new_block = malloc(sizeof(Block));
+				new_block->next = NULL;
+				new_block->data = NULL;
+				new_block->capacity = 0;
+				new_block->size = 0;
+				new_block->address = curr_block->address + curr_block->size;
+				new_block->line_num = line_num;
+				new_block->opcode = BLOCK;
+				curr_block->next = new_block;
+				curr_block = new_block;
+				new_label.target = curr_block;
+
 				insert(&labels, &new_label);
 			}
 			else {
@@ -320,21 +361,38 @@ int main(int argc, char **argv) {
 	free(buffer);
 	fclose(infile);
 
-	for (LabelReference *i = refs.data; i < refs.data + refs.size; i++) {
-		Label *label = get(&labels, &(i->label));
-		if (label == NULL) {
-			fprintf(stderr, "Assembler Error(%s:%lu): unknown label \"", infile_name, i->line_num);
-			fwrite(i->label.d, sizeof(char), i->label.len, stderr);
-			fputs("\"\n", stderr);
-			return SEMANTIC_ERROR;
+	Block *end = curr_block;
+	size_t offset = 0;
+	for (curr_block = text_segment; curr_block; curr_block = curr_block->next) {
+		curr_block->address += offset;
+		if (curr_block->opcode == SHORT_JMP) {
+			Label *lab = get(&labels, (String*)&(curr_block->data));
+			if (lab == NULL) {
+				fprintf(stderr, "Assembler Error(%s:%lu): unknown label \"", infile_name, curr_block->line_num);
+				fwrite(curr_block->data, sizeof(char), curr_block->capacity, stderr);
+				fputs("\"\n", stderr);
+				return SEMANTIC_ERROR;
+			}
+			else {
+				free(curr_block->data);
+				curr_block->data = lab->target;
+				offset += setJmpOperand(curr_block);
+			}
 		}
-		int32_t offset = label->index - i->pc;
-		int8_t small_offset = (int8_t)offset;
-		if (offset != (int32_t)small_offset) {
-			fprintf(stderr, "Assembler Error(%s:%lu): jump distances greater than 127 aren't supported yet\n", infile_name, i->line_num);
-			return FEATURE_NOT_IMPLEMENTED_YET;
+	}
+
+	while (offset) {
+		offset = 0;
+		for (curr_block = text_segment; curr_block; curr_block = curr_block->next) {
+			curr_block->address += offset;
+			switch (curr_block->opcode) {
+				case (SHORT_JMP) :
+				case (NEAR_JMP) : {
+					offset += setJmpOperand(curr_block);
+				}
+				default : {}
+			}
 		}
-		text_segment[i->index] = small_offset;
 	}
 
 	// Write ELF Header
@@ -364,8 +422,12 @@ int main(int argc, char **argv) {
 	start_str.len = 6;
 	Label *start_label = get(&labels, &start_str);
 	if (start_label) {
-		header.entry = start_label->index;
+		header.entry = start_label->target->address;
 	}
+
+	freeData(&labels);
+
+	size_t segment_size = end->address + end->size;
 
 	// Write Program Header for text segment
 	ElfProgramHeader text_header;
@@ -374,8 +436,8 @@ int main(int argc, char **argv) {
 	text_header.offset  = 0x78;
 	text_header.vaddr   = 0;
 	text_header.paddr   = 0;
-	text_header.filesz  = text_size;
-	text_header.memsz   = text_size;
+	text_header.filesz  = segment_size;
+	text_header.memsz   = segment_size;
 	text_header.align   = 8;
 
 	FILE *outfile = fopen(outfile_name ? outfile_name : "out.elf", "w");
@@ -385,7 +447,24 @@ int main(int argc, char **argv) {
 	}
 	fwrite((void*) &header, ELF_HEADER_SIZE, 1, outfile);
 	fwrite((void*) &text_header, PH_ENTRY_SIZE, 1, outfile);
-	fwrite((void*) text_segment, 1, text_size, outfile);
+	for (curr_block = text_segment; curr_block; curr_block = curr_block->next) {
+		switch (curr_block->opcode) {
+			case (BLOCK) : {
+				fwrite((void*) curr_block->data, 1, curr_block->size, outfile);
+				break;
+			}
+			case (SHORT_JMP) : {
+				int16_t to_write = SHORT_JMP | ((curr_block->operand & 0xFF) << 8);
+				fwrite((void*) &to_write, sizeof(int16_t), 1, outfile);
+				break;
+			}
+			case (NEAR_JMP) : {
+				fwrite((void*) &(curr_block->opcode), sizeof(uint8_t), 1, outfile);
+				fwrite((void*) &(curr_block->operand), sizeof(int16_t), 1, outfile);
+				break;
+			}
+		}
+	}
 	fclose(outfile);
 
 	return SUCCESS;
