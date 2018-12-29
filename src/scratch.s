@@ -12,10 +12,10 @@ dd 8
 ; Entry point
 _start:
 	mov eax, cr0
-;	and eax, 0x7FFFFFFF
+	and eax, 0x7FFFFFFF
 ;	mov cr0, eax
 ;	mov edi, 0
-;	xor eax, eax
+;	mov eax, 0
 ;	mov ecx, 0x1000
 ;	mov cr3, edi
 
