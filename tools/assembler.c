@@ -37,6 +37,23 @@
 #define BLOCK 0
 #define SHORT_JMP 0xEB
 #define NEAR_JMP 0xE9
+#define MOV_R_CR 0x200F
+#define MOV_CR_R 0x220F
+
+#define MOVB 0x88
+#define MOVB_M_R 0x88
+#define MOVB_R_M 0x8A
+
+#define MOVW 0x89
+#define MOVL 0x89
+#define MOVW_M_R 0x89
+#define MOVL_M_R 0x89
+#define MOVW_R_M 0x8B
+#define MOVL_R_M 0x8B
+
+#define DIRECT 0xC0
+
+#define INVALID_REGISTER -1
 
 #define EQUALS(left,right,size) ((left).len == (size) && !strncmp((left).d, (right), (size)))
 #define MAX(a,b) ((a)<(b) ? (b) : (a));
@@ -239,6 +256,106 @@ size_t setJmpOperand(Block *curr_block) {
 	return 0;
 }
 
+int16_t getRegisterWidth(String *r) {
+	size_t len = r->len;
+	char first_char = *(r->d);
+	char last_char = r->d[len-1];
+	if (last_char == 'l' || last_char == 'h') {
+		return 8;
+	}
+	else if (last_char == 'w' || len == 2) {
+		return 16;
+	}
+	else if (first_char == 'e' || last_char == 'd' || first_char == 'c' || first_char == 'd') {
+		return 32;
+	}
+	else if (first_char == 'r' || first_char == 'm') {
+		return 64;
+	}
+	else if (first_char == 's') {
+		return 80;
+	}
+	else if (first_char == 'x') {
+		return 128;
+	}
+	else if (first_char == 'y') {
+		return 256;
+	}
+	else {
+		return INVALID_REGISTER;
+	}
+}
+
+int8_t encodeRegister(String *r) {
+	if (EQUALS(*r,"al",2) || EQUALS(*r,"ax",2) || EQUALS(*r,"eax",3) || EQUALS(*r,"rax",3) || EQUALS(*r,"st0",3)
+	 || EQUALS(*r,"mmx0",4) || EQUALS(*r,"xmm0",4) || EQUALS(*r,"ymm0",4) || EQUALS(*r,"es",2) || EQUALS(*r,"cr0",3) || EQUALS(*r,"dr0",3)) {
+		return 0;
+	}
+	else if (EQUALS(*r,"cl",2) || EQUALS(*r,"cx",2) || EQUALS(*r,"ecx",3) || EQUALS(*r,"rcx",3) || EQUALS(*r,"st1",3)
+	 || EQUALS(*r,"mmx1",4) || EQUALS(*r,"xmm1",4) || EQUALS(*r,"ymm1",4) || EQUALS(*r,"cs",2) || EQUALS(*r,"cr1",3) || EQUALS(*r,"dr1",3)) {
+		return 1;
+	}
+	else if (EQUALS(*r,"dl",2) || EQUALS(*r,"dx",2) || EQUALS(*r,"edx",3) || EQUALS(*r,"rdx",3) || EQUALS(*r,"st2",3)
+	 || EQUALS(*r,"mmx2",4) || EQUALS(*r,"xmm2",4) || EQUALS(*r,"ymm2",4) || EQUALS(*r,"ss",2) || EQUALS(*r,"cr2",3) || EQUALS(*r,"dr2",3)) {
+		return 2;
+	}
+	else if (EQUALS(*r,"bl",2) || EQUALS(*r,"bx",2) || EQUALS(*r,"ebx",3) || EQUALS(*r,"rbx",3) || EQUALS(*r,"st3",3)
+	 || EQUALS(*r,"mmx3",4) || EQUALS(*r,"xmm3",4) || EQUALS(*r,"ymm3",4) || EQUALS(*r,"ds",2) || EQUALS(*r,"cr3",3) || EQUALS(*r,"dr3",3)) {
+		return 3;
+	}
+	else if (EQUALS(*r,"ah",2) || EQUALS(*r,"spl",3) || EQUALS(*r,"sp",2) || EQUALS(*r,"esp",3) || EQUALS(*r,"rsp",3) || EQUALS(*r,"st4",3)
+	 || EQUALS(*r,"mmx4",4) || EQUALS(*r,"xmm4",4) || EQUALS(*r,"ymm4",4) || EQUALS(*r,"fs",2) || EQUALS(*r,"cr4",3) || EQUALS(*r,"dr4",3)) {
+		return 4;
+	}
+	else if (EQUALS(*r,"ch",2) || EQUALS(*r,"bpl",3) || EQUALS(*r,"bp",2) || EQUALS(*r,"ebp",3) || EQUALS(*r,"rbp",3) || EQUALS(*r,"st5",3)
+	 || EQUALS(*r,"mmx5",4) || EQUALS(*r,"xmm5",4) || EQUALS(*r,"ymm5",4) || EQUALS(*r,"gs",2) || EQUALS(*r,"cr5",3) || EQUALS(*r,"dr5",3)) {
+		return 5;
+	}
+	else if (EQUALS(*r,"dh",2) || EQUALS(*r,"sil",3) || EQUALS(*r,"si",2) || EQUALS(*r,"esi",3) || EQUALS(*r,"rsi",3) || EQUALS(*r,"st6",3)
+	 || EQUALS(*r,"mmx6",4) || EQUALS(*r,"xmm6",4) || EQUALS(*r,"ymm6",4) || EQUALS(*r,"cr6",3) || EQUALS(*r,"dr6",3)) {
+		return 6;
+	}
+	else if (EQUALS(*r,"bh",2) || EQUALS(*r,"dil",3) || EQUALS(*r,"di",2) || EQUALS(*r,"edi",3) || EQUALS(*r,"rdi",3) || EQUALS(*r,"st7",3)
+	 || EQUALS(*r,"mmx7",4) || EQUALS(*r,"xmm7",4) || EQUALS(*r,"ymm7",4) || EQUALS(*r,"cr7",3) || EQUALS(*r,"dr7",3)) {
+		return 7;
+	}
+	else if (EQUALS(*r,"r8l",3) || EQUALS(*r,"r8w",3) || EQUALS(*r,"r8d",3) || EQUALS(*r,"r8",2) 
+	 || EQUALS(*r,"mmx8",4) || EQUALS(*r,"xmm8",4) || EQUALS(*r,"ymm8",4) || EQUALS(*r,"cr8",3) || EQUALS(*r,"dr8",3)) {
+		return 8;
+	}
+	else if (EQUALS(*r,"r9l",3) || EQUALS(*r,"r9w",3) || EQUALS(*r,"r9d",3) || EQUALS(*r,"r9",2) 
+	 || EQUALS(*r,"mmx9",4) || EQUALS(*r,"xmm9",4) || EQUALS(*r,"ymm9",4) || EQUALS(*r,"cr9",3) || EQUALS(*r,"dr9",3)) {
+		return 9;
+	}
+	else if (EQUALS(*r,"r10l",3) || EQUALS(*r,"r10w",3) || EQUALS(*r,"r10d",3) || EQUALS(*r,"r10",2) 
+	 || EQUALS(*r,"mmx10",4) || EQUALS(*r,"xmm10",4) || EQUALS(*r,"ymm10",4) || EQUALS(*r,"cr10",3) || EQUALS(*r,"dr10",3)) {
+		return 10;
+	}
+	else if (EQUALS(*r,"r11l",3) || EQUALS(*r,"r11w",3) || EQUALS(*r,"r11d",3) || EQUALS(*r,"r11",2) 
+	 || EQUALS(*r,"mmx11",4) || EQUALS(*r,"xmm11",4) || EQUALS(*r,"ymm11",4) || EQUALS(*r,"cr11",3) || EQUALS(*r,"dr11",3)) {
+		return 11;
+	}
+	else if (EQUALS(*r,"r12l",3) || EQUALS(*r,"r12w",3) || EQUALS(*r,"r12d",3) || EQUALS(*r,"r12",2) 
+	 || EQUALS(*r,"mmx12",4) || EQUALS(*r,"xmm12",4) || EQUALS(*r,"ymm12",4) || EQUALS(*r,"cr12",3) || EQUALS(*r,"dr12",3)) {
+		return 10;
+	}
+	else if (EQUALS(*r,"r13l",3) || EQUALS(*r,"r13w",3) || EQUALS(*r,"r13d",3) || EQUALS(*r,"r13",2) 
+	 || EQUALS(*r,"mmx13",4) || EQUALS(*r,"xmm13",4) || EQUALS(*r,"ymm13",4) || EQUALS(*r,"cr13",3) || EQUALS(*r,"dr13",3)) {
+		return 13;
+	}
+	else if (EQUALS(*r,"r14l",3) || EQUALS(*r,"r14w",3) || EQUALS(*r,"r14d",3) || EQUALS(*r,"r14",2) 
+	 || EQUALS(*r,"mmx14",4) || EQUALS(*r,"xmm14",4) || EQUALS(*r,"ymm14",4) || EQUALS(*r,"cr14",3) || EQUALS(*r,"dr14",3)) {
+		return 14;
+	}
+	else if (EQUALS(*r,"r15l",3) || EQUALS(*r,"r15w",3) || EQUALS(*r,"r15d",3) || EQUALS(*r,"r15",2) 
+	 || EQUALS(*r,"mmx15",4) || EQUALS(*r,"xmm15",4) || EQUALS(*r,"ymm15",4) || EQUALS(*r,"cr15",3) || EQUALS(*r,"dr15",3)) {
+		return 15;
+	}
+	else {
+		return INVALID_REGISTER;
+	}
+}
+
 int main(int argc, char **argv) {
 	char *infile_name = NULL;
 	char *outfile_name = NULL;
@@ -330,6 +447,61 @@ int main(int argc, char **argv) {
 			memcpy(curr_block->data, target.d, target.len);
 		}
 
+		// mov
+		else if (EQUALS(opcode,"mov",3)) {
+			String src, dest;
+			getIdentifier(operands, &dest);
+			char *s = dest.d + dest.len;
+			if (*s != ',') {
+				fprintf(stderr, "Assembler Error (%s:%lu): Expected comma\n", infile_name, line_num);
+				return SYNTAX_ERROR;
+			}
+			getIdentifier(s+1, &src);
+			int8_t encoded_src = encodeRegister(&src);
+			if (encoded_src == INVALID_REGISTER) {
+				fprintf(stderr, "Assembler Error (%s:%lu): Invalid register name: %s\n", infile_name, line_num, src);
+				return SYNTAX_ERROR;
+			}
+			int8_t encoded_dest = encodeRegister(&dest);
+			if (encoded_dest == INVALID_REGISTER) {
+				fprintf(stderr, "Assembler Error (%s:%lu): Invalid register name: %s\n", infile_name, line_num, dest);
+				return SYNTAX_ERROR;
+			}
+			else if (encoded_dest > 7 || encoded_src > 7) {
+				fprintf(stderr, "Assembler Error (%s:%lu): Extended register set not supported\n", infile_name, line_num);
+			}
+			uint8_t operands = DIRECT | (encoded_dest << 3) | encoded_src;
+			if (!strncmp(src.d, "cr", 2)) {
+				curr_block = makeRoom(curr_block, line_num, 3);
+				uint16_t *d = curr_block->data + curr_block->size;
+				*d = MOV_R_CR;
+				*(uint8_t*)(d+1) = operands;
+				curr_block->size += 3;
+			}
+			else if (!strncmp(dest.d, "cr", 2)) {
+				curr_block = makeRoom(curr_block, line_num, 3);
+				uint16_t *d = curr_block->data + curr_block->size;
+				*d = MOV_CR_R;
+				*(uint8_t*)(d+1) = operands;
+				curr_block->size += 3;
+			}
+			else {
+				int16_t width = getRegisterWidth(&dest);
+				if (width == 8) {
+					((uint8_t*)curr_block->data)[curr_block->size] = MOVB;
+				}
+				else if (width == 16 || width == 32) {
+					((uint8_t*)curr_block->data)[curr_block->size] = MOVL;
+				}
+				else {
+					fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n", infile_name, line_num, width);
+					return FEATURE_NOT_IMPLEMENTED_YET;
+				}
+				((uint8_t*)curr_block->data)[curr_block->size+1] = operands;
+				curr_block->size += 2;
+			}
+		}
+
 		// Not recognized instruction, check if it's a label
 		else if (opcode.len) {
 			size_t remaining = n - offset - opcode.len;
@@ -364,7 +536,7 @@ int main(int argc, char **argv) {
 		else if (n > offset && *operands == '[') {
 			operands++;
 			getIdentifier(operands, &opcode);
-			if (EQUALS(opcode, "BITS", 4)) {
+			if (EQUALS(opcode, "bits", 4)) {
 				operands = opcode.d + opcode.len;
 				uint8_t mode;
 				if (sscanf(operands, " %hhi", &mode) != 1) {
