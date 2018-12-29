@@ -13,9 +13,9 @@ dd 8
 _start:
 	mov eax, cr0
 	and eax, 0x7FFFFFFF
-;	mov cr0, eax
-;	mov edi, 0
-;	mov eax, 0
+	mov cr0, eax
+	xor edi, edi
+	xor eax, eax
 ;	mov ecx, 0x1000
 ;	mov cr3, edi
 

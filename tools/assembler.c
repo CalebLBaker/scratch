@@ -11,6 +11,7 @@
 #define SYNTAX_ERROR -3
 #define SEMANTIC_ERROR -4
 #define FEATURE_NOT_IMPLEMENTED_YET -5
+#define ERROR -6
 
 #define ELF_MAGIC_NUMBER 0x464C457F
 #define SIXTY_FOUR_BIT 2
@@ -51,9 +52,14 @@
 #define MOVW_R_M 0x8B
 #define MOVL_R_M 0x8B
 
-#define AND_AL_I 0x24
-#define AND_AX_I 0x25
-#define AND_EAX_I 0x25
+#define AND 0x20
+#define XOR 0x30
+
+#define L 1
+
+#define AL_I 4
+#define AX_I 5
+#define EAX_I 5
 
 #define DIRECT 0xC0
 
@@ -360,6 +366,75 @@ int8_t encodeRegister(String *r) {
 	}
 }
 
+bool encodeInstruction(Block *curr_block, char *operands, char *infile_name, size_t line_num, uint8_t opcode) {
+	String src, dest;
+	getIdentifier(operands, &dest);
+	char *s = dest.d + dest.len;
+	if (*s != ',') {
+		fprintf(stderr, "Assembler Error (%s:%lu): Expected comma\n", infile_name, line_num);
+		return false;
+	}
+	getIdentifier(s+1, &src);
+
+	// Immediate source
+	if (isdigit(src.d[0])) {
+		if (EQUALS(dest,"al",2)) {
+			curr_block = makeRoom(curr_block, line_num, 2);
+			((uint8_t*)curr_block->data)[curr_block->size] = opcode | AL_I;
+			sscanf(src.d, "%hhi", (int8_t*)(curr_block->data+curr_block->size+1));
+			curr_block->size += 2;
+		}
+		else if (EQUALS(dest,"ax",2)) {
+			curr_block = makeRoom(curr_block, line_num, 3);
+			((uint8_t*)curr_block->data)[curr_block->size] = opcode | AX_I;
+			sscanf(src.d, "%hi", (int16_t*)(curr_block->data+curr_block->size+1));
+			curr_block->size += 3;
+		}
+		else if (EQUALS(dest,"eax",3)) {
+			curr_block = makeRoom(curr_block, line_num, 5);
+			((uint8_t*)curr_block->data)[curr_block->size] = opcode | EAX_I;
+			sscanf(src.d, "%i", (int32_t*)(curr_block->data+curr_block->size+1));
+			curr_block->size += 5;
+		}
+		else {
+			fprintf(stderr, "Assembler Error (%s:%lu): Destination register other than eax not supported\n", infile_name, line_num);
+			return false;
+		}
+	}
+
+	// Register source
+	else {
+		int8_t encoded_dest = encodeRegister(&dest);
+		int8_t encoded_src = encodeRegister(&src);
+		if (encoded_dest == INVALID_REGISTER) {
+			fprintf(stderr, "Assembler Error (%s:%lu): Invalid register name: %s\n", infile_name, line_num, dest);
+			return SYNTAX_ERROR;
+		}
+		else if (encoded_src == INVALID_REGISTER) {
+			fprintf(stderr, "Assembler Error (%s:%lu): Invalid register name: %s\n", infile_name, line_num, src);
+			return SYNTAX_ERROR;
+		}
+		else if (encoded_dest > 7 || encoded_src > 7) {
+			fprintf(stderr, "Assembler Error (%s:%lu): Extended register set not supported\n", infile_name, line_num);
+		}
+		int8_t operands = DIRECT | (encoded_dest << 3) | encoded_src;
+		int16_t width = getRegisterWidth(&dest);
+		if (width == 8) {
+			((uint8_t*)curr_block->data)[curr_block->size] = opcode;
+		}
+		else if (width == 16 || width == 32) {
+			((uint8_t*)curr_block->data)[curr_block->size] = opcode | L;
+		}
+		else {
+			fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n", infile_name, line_num, width);
+			return FEATURE_NOT_IMPLEMENTED_YET;
+		}
+		((uint8_t*)curr_block->data)[curr_block->size+1] = operands;
+		curr_block->size += 2;
+	}
+	return true;
+}
+
 int main(int argc, char **argv) {
 	char *infile_name = NULL;
 	char *outfile_name = NULL;
@@ -507,45 +582,14 @@ int main(int argc, char **argv) {
 		}
 
 		else if (EQUALS(opcode,"and",3)) {
-			String src, dest;
-			getIdentifier(operands, &dest);
-			char *s = dest.d + dest.len;
-			if (*s != ',') {
-				fprintf(stderr, "Assembler Error (%s:%lu): Expected comma\n", infile_name, line_num);
-				return SYNTAX_ERROR;
+			if (!encodeInstruction(curr_block, operands, infile_name, line_num, AND)) {
+				return ERROR;
 			}
-			getIdentifier(s+1, &src);
+		}
 
-			// Immediate source
-			if (isdigit(src.d[0])) {
-				if (EQUALS(dest,"al",2)) {
-					curr_block = makeRoom(curr_block, line_num, 2);
-					((uint8_t*)curr_block->data)[curr_block->size] = AND_AL_I;
-					sscanf(src.d, "%hhi", (int8_t*)(curr_block->data+curr_block->size+1));
-					curr_block->size += 2;
-				}
-				else if (EQUALS(dest,"ax",2)) {
-					curr_block = makeRoom(curr_block, line_num, 3);
-					((uint8_t*)curr_block->data)[curr_block->size] = AND_AX_I;
-					sscanf(src.d, "%hi", (int16_t*)(curr_block->data+curr_block->size+1));
-					curr_block->size += 3;
-				}
-				else if (EQUALS(dest,"eax",3)) {
-					curr_block = makeRoom(curr_block, line_num, 5);
-					((uint8_t*)curr_block->data)[curr_block->size] = AND_EAX_I;
-					sscanf(src.d, "%i", (int32_t*)(curr_block->data+curr_block->size+1));
-					curr_block->size += 5;
-				}
-				else {
-					fprintf(stderr, "Assembler Error (%s:%lu): Destination register other than eax not supported\n", infile_name, line_num);
-					return FEATURE_NOT_IMPLEMENTED_YET;
-				}
-			}
-
-			// Register source
-			else {
-				fprintf(stderr, "Assembler Error (%s:%lu): AND from register not supported\n", infile_name, line_num);
-				return FEATURE_NOT_IMPLEMENTED_YET;
+		else if (EQUALS(opcode,"xor",3)) {
+			if (!encodeInstruction(curr_block, operands, infile_name, line_num, XOR)) {
+				return ERROR;
 			}
 		}
 
