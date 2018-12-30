@@ -58,6 +58,10 @@
 #define AND 0x20
 #define XOR 0x30
 
+#define REP_STOSB 0xAAF3
+#define REP_STOSW 0xABF3
+#define REP_STOSD 0xABF3
+
 #define L 1
 
 #define AL_I 4
@@ -585,19 +589,18 @@ int main(int argc, char **argv) {
 				else if (encoded_src > 7) {
 					fprintf(stderr, "Assembler Error (%s:%lu): Extended register set not supported\n", infile_name, line_num);
 				}
-				uint8_t operands = DIRECT | (encoded_dest << 3) | encoded_src;
 				if (!strncmp(src.d, "cr", 2)) {
 					curr_block = makeRoom(curr_block, line_num, 3);
 					uint16_t *d = curr_block->data + curr_block->size;
 					*d = MOV_R_CR;
-					*(uint8_t*)(d+1) = operands;
+					*(uint8_t*)(d+1) = DIRECT | (encoded_src << 3) | encoded_dest;
 					curr_block->size += 3;
 				}
 				else if (!strncmp(dest.d, "cr", 2)) {
 					curr_block = makeRoom(curr_block, line_num, 3);
 					uint16_t *d = curr_block->data + curr_block->size;
 					*d = MOV_CR_R;
-					*(uint8_t*)(d+1) = operands;
+					*(uint8_t*)(d+1) = DIRECT | (encoded_dest << 3) | encoded_src;
 					curr_block->size += 3;
 				}
 				else {
@@ -613,7 +616,7 @@ int main(int argc, char **argv) {
 						fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n", infile_name, line_num, width);
 						return FEATURE_NOT_IMPLEMENTED_YET;
 					}
-					((uint8_t*)curr_block->data)[curr_block->size+1] = operands;
+					((uint8_t*)curr_block->data)[curr_block->size+1] = DIRECT | (encoded_dest << 3) | encoded_src;
 					curr_block->size += 2;
 				}
 			}
@@ -629,6 +632,23 @@ int main(int argc, char **argv) {
 			if (!encodeInstruction(curr_block, operands, infile_name, line_num, XOR)) {
 				return ERROR;
 			}
+		}
+
+		else if (EQUALS(opcode,"rep",3)) {
+			String command;
+			getIdentifier(operands, &command);
+			curr_block = makeRoom(curr_block, line_num, 2);
+			if (EQUALS(command,"stosb",5)) {
+				*(int16_t*)(curr_block->data+curr_block->size) = REP_STOSB;
+			}
+			else if (EQUALS(command,"stosw",5) || EQUALS(command,"stosd",5)) {
+				*(int16_t*)(curr_block->data+curr_block->size) = REP_STOSD;
+			}
+			else {
+				fprintf(stderr, "Assembler Error (%s:%lu): Unsuported instruction: %s\n", infile_name, line_num, opcode);
+				return FEATURE_NOT_IMPLEMENTED_YET;
+			}
+			curr_block->size += 2;
 		}
 
 		// Not recognized instruction, check if it's a label
