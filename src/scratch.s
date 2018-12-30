@@ -16,8 +16,8 @@ _start:
 	mov cr0, eax
 	xor edi, edi
 	xor eax, eax
-;	mov ecx, 0x1000
-;	mov cr3, edi
+	mov ecx, 0x1000
+	mov cr3, edi
 
 _loop:
 	jmp _loop

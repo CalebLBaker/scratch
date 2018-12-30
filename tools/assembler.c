@@ -51,6 +51,9 @@
 #define MOVL_M_R 0x89
 #define MOVW_R_M 0x8B
 #define MOVL_R_M 0x8B
+#define MOVB_I 0xB0
+#define MOVW_I 0xB8
+#define MOVL_I 0xB8
 
 #define AND 0x20
 #define XOR 0x30
@@ -537,47 +540,82 @@ int main(int argc, char **argv) {
 			}
 			getIdentifier(s+1, &src);
 			int8_t encoded_dest = encodeRegister(&dest);
-			int8_t encoded_src = encodeRegister(&src);
-			if (encoded_dest == INVALID_REGISTER) {
-				fprintf(stderr, "Assembler Error (%s:%lu): Invalid register name: %s\n", infile_name, line_num, dest);
-				return SYNTAX_ERROR;
-			}
-			else if (encoded_src == INVALID_REGISTER) {
-				fprintf(stderr, "Assembler Error (%s:%lu): Invalid register name: %s\n", infile_name, line_num, src);
-				return SYNTAX_ERROR;
-			}
-			else if (encoded_dest > 7 || encoded_src > 7) {
+			if (encoded_dest > 7) {
 				fprintf(stderr, "Assembler Error (%s:%lu): Extended register set not supported\n", infile_name, line_num);
 			}
-			uint8_t operands = DIRECT | (encoded_dest << 3) | encoded_src;
-			if (!strncmp(src.d, "cr", 2)) {
-				curr_block = makeRoom(curr_block, line_num, 3);
-				uint16_t *d = curr_block->data + curr_block->size;
-				*d = MOV_R_CR;
-				*(uint8_t*)(d+1) = operands;
-				curr_block->size += 3;
-			}
-			else if (!strncmp(dest.d, "cr", 2)) {
-				curr_block = makeRoom(curr_block, line_num, 3);
-				uint16_t *d = curr_block->data + curr_block->size;
-				*d = MOV_CR_R;
-				*(uint8_t*)(d+1) = operands;
-				curr_block->size += 3;
-			}
-			else {
+
+			// Move from immediate
+			else if (isdigit(src.d[0])) {
 				int16_t width = getRegisterWidth(&dest);
 				if (width == 8) {
-					((uint8_t*)curr_block->data)[curr_block->size] = MOVB;
+					curr_block = makeRoom(curr_block, line_num, 2);
+					((uint8_t*)curr_block->data)[curr_block->size] = MOVB_I + encoded_dest;
+					sscanf(src.d, "%hhi", (int8_t*)(curr_block->data+curr_block->size+1));
+					curr_block->size += 2;
 				}
-				else if (width == 16 || width == 32) {
-					((uint8_t*)curr_block->data)[curr_block->size] = MOVL;
+				else if (width == 16) {
+					curr_block = makeRoom(curr_block, line_num, 3);
+					((uint8_t*)curr_block->data)[curr_block->size] = MOVW_I + encoded_dest;
+					sscanf(src.d, "%hi", (int16_t*)(curr_block->data+curr_block->size+1));
+					curr_block->size += 3;
+				}
+				else if (width == 32) {
+					curr_block = makeRoom(curr_block, line_num, 5);
+					((uint8_t*)curr_block->data)[curr_block->size] = MOVL_I + encoded_dest;
+					sscanf(src.d, "%i", (int32_t*)(curr_block->data+curr_block->size+1));
+					curr_block->size += 5;
 				}
 				else {
 					fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n", infile_name, line_num, width);
 					return FEATURE_NOT_IMPLEMENTED_YET;
 				}
-				((uint8_t*)curr_block->data)[curr_block->size+1] = operands;
-				curr_block->size += 2;
+			}
+
+			// Move from register
+			else {
+				int8_t encoded_src = encodeRegister(&src);
+				if (encoded_dest == INVALID_REGISTER) {
+					fprintf(stderr, "Assembler Error (%s:%lu): Invalid register name: %s\n", infile_name, line_num, dest);
+					return SYNTAX_ERROR;
+				}
+				else if (encoded_src == INVALID_REGISTER) {
+					fprintf(stderr, "Assembler Error (%s:%lu): Invalid register name: %s\n", infile_name, line_num, src);
+					return SYNTAX_ERROR;
+				}
+				else if (encoded_src > 7) {
+					fprintf(stderr, "Assembler Error (%s:%lu): Extended register set not supported\n", infile_name, line_num);
+				}
+				uint8_t operands = DIRECT | (encoded_dest << 3) | encoded_src;
+				if (!strncmp(src.d, "cr", 2)) {
+					curr_block = makeRoom(curr_block, line_num, 3);
+					uint16_t *d = curr_block->data + curr_block->size;
+					*d = MOV_R_CR;
+					*(uint8_t*)(d+1) = operands;
+					curr_block->size += 3;
+				}
+				else if (!strncmp(dest.d, "cr", 2)) {
+					curr_block = makeRoom(curr_block, line_num, 3);
+					uint16_t *d = curr_block->data + curr_block->size;
+					*d = MOV_CR_R;
+					*(uint8_t*)(d+1) = operands;
+					curr_block->size += 3;
+				}
+				else {
+					curr_block = makeRoom(curr_block, line_num, 2);
+					int16_t width = getRegisterWidth(&dest);
+					if (width == 8) {
+						((uint8_t*)curr_block->data)[curr_block->size] = MOVB;
+					}
+					else if (width == 16 || width == 32) {
+						((uint8_t*)curr_block->data)[curr_block->size] = MOVL;
+					}
+					else {
+						fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n", infile_name, line_num, width);
+						return FEATURE_NOT_IMPLEMENTED_YET;
+					}
+					((uint8_t*)curr_block->data)[curr_block->size+1] = operands;
+					curr_block->size += 2;
+				}
 			}
 		}
 
