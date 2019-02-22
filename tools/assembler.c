@@ -1,9 +1,63 @@
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <ctype.h>
 #include <string.h>
 #include <stdio.h>
+
+#define EQUALS(left,right,size) ((left).len == (size) && !strncmp((left).d, (right), (size)))
+
+// Can represent either a block of multiple instructions
+// or a single control flow instruction
+typedef struct Block {
+	void   *next;		// Pointer to next block
+	void   *data;		// For multi-instruction blocks, the encoded instructions; For single instructions, the target label
+	size_t  capacity;	// Capacity of buffer pointed to by data
+	size_t  size;		// Size of the block
+	size_t  address;	// Starting address of the block
+	size_t  line_num;	// Line number for first instruction of the block
+	int32_t operand;	// Single instruction only: encoded operand
+	uint8_t opcode;		// Opcode of the instruction; BLOCK for a multi-instruction block
+	bool    long_mode;	// true for 64 bit mode, false for 32 bit mode
+} Block;
+
+typedef struct String {
+	char   *d;
+	size_t  len;
+} String;
+
+typedef struct Label {
+	Block  *target;
+	char   *name;
+	size_t  name_len;
+} Label;
+
+size_t hashString(char *d, size_t len) {
+	size_t hash = 5381;
+	for (size_t i = 0; i < len; i++) {
+		hash = ((hash << 5) + hash) + d[i];
+	}
+	return hash;
+}
+
+#define DTYPE Label
+#define QTYPE String
+#define D_HASH(d) (hashString((d)->name, (d)->name_len))
+#define Q_HASH(q) (hashString((q)->d, (q)->len))
+#define DELETE(d) if ((d).name) {   \
+	free((d).name);                 \
+}
+#define VALID(d) ((d).name)
+#define EQ(d,q) (EQUALS((*q),(d).name,(d).name_len))
+#include "hash-map.h"
+
+typedef struct Constant {
+	char   *name;
+	size_t  name_len;
+	size_t  val;
+} Constant;
+
+#define DTYPE Constant
+#include "hash-map.h"
 
 #define SUCCESS 0
 #define USAGE_ERROR -1
@@ -72,7 +126,6 @@
 
 #define INVALID_REGISTER -1
 
-#define EQUALS(left,right,size) ((left).len == (size) && !strncmp((left).d, (right), (size)))
 #define MAX(a,b) ((a)<(b) ? (b) : (a));
 
 typedef struct ElfHeader {
@@ -110,128 +163,6 @@ typedef struct ElfProgramHeader {
 	uint64_t    memsz;
 	uint64_t    align;
 } ElfProgramHeader;
-
-// Can represent either a block of multiple instructions
-// or a single control flow instruction
-typedef struct Block {
-	void   *next;		// Pointer to next block
-	void   *data;		// For multi-instruction blocks, the encoded instructions; For single instructions, the target label
-	size_t  capacity;	// Capacity of buffer pointed to by data
-	size_t  size;		// Size of the block
-	size_t  address;	// Starting address of the block
-	size_t  line_num;	// Line number for first instruction of the block
-	int32_t operand;	// Single instruction only: encoded operand
-	uint8_t opcode;		// Opcode of the instruction; BLOCK for a multi-instruction block
-	bool    long_mode;	// true for 64 bit mode, false for 32 bit mode
-} Block;
-
-typedef struct String {
-	char   *d;
-	size_t  len;
-} String;
-
-typedef struct Label {
-	Block  *target;
-	char   *name;
-	size_t  name_len;
-} Label;
-
-typedef struct MapEntry {
-	Label   l;
-	size_t  hash;
-} MapEntry;
-
-typedef struct LabelMap {
-	MapEntry   *data;
-	size_t      mask;
-	size_t      num_entries;
-	size_t      max_probe_length;
-} LabelMap;
-
-size_t hashString(char *d, size_t len) {
-	size_t hash = 5381;
-	for (size_t i = 0; i < len; i++) {
-		hash = ((hash << 5) + hash) + d[i];
-	}
-	return hash;
-}
-
-void init(LabelMap *m) {
-	m->data = calloc(LABEL_MAP_START_SIZE, sizeof(MapEntry));
-	m->mask = LABEL_MAP_START_MASK;
-	m->num_entries = 0;
-	m->max_probe_length = 0;
-}
-
-void freeData(LabelMap *m) {
-	for (size_t i = 0; i <= m->mask; i++) {
-		if (m->data[i].l.name) {
-			free(m->data[i].l.name);
-		}
-	}
-	free(m->data);
-}
-
-Label* get(LabelMap *map, String *l) {
-	size_t mask = map->mask;
-	size_t pos = hashString(l->d, l->len) & mask;
-	MapEntry *d = map->data;
-	size_t max_dist = map->max_probe_length;
-	for (size_t distance = 0; d[pos].l.name && distance <= max_dist; distance++) {
-		if (EQUALS(*l, d[pos].l.name, l->len)) {
-			return &(d[pos].l);
-		}
-		pos = (pos+1) & mask;
-	}
-	return NULL;
-}
-
-void basicInsert(LabelMap *map, Label *entry, size_t hash) {
-	size_t mask = map->mask;
-	MapEntry *d = map->data;
-	size_t pos = hash & mask;
-	for (size_t distance = 0;; distance++) {
-		if (d[pos].l.name == NULL) {
-			d[pos].l = *entry;
-			d[pos].hash = hash;
-			if (distance > map->max_probe_length) {
-				map->max_probe_length = distance;
-			}
-			return;
-		}
-		size_t prev_dist = (pos - d[pos].hash) & mask;
-		if (prev_dist < distance) {
-			Label tmp_l = *entry;
-			*entry = d[pos].l;
-			d[pos].l = tmp_l;
-			size_t tmp_hash = hash;
-			hash = d[pos].hash;
-			d[pos].hash = tmp_hash;
-			distance = prev_dist;
-		}
-		pos = (pos+1) & mask;
-	}
-}
-
-void insert(LabelMap *map, Label *entry) {
-	map->num_entries++;
-	size_t mask = map->mask;
-	if ((double)map->num_entries / mask > LABEL_MAX_LOAD_FACTOR) {
-		size_t old_mask = map->mask;
-		map->mask = (old_mask << LABEL_RESIZE_SHIFT) | LABEL_RESIZE_MASK;
-		MapEntry *old_data = map->data;
-		map->data = calloc(map->mask+1, sizeof(MapEntry));
-		map->max_probe_length = 0;
-		for (size_t i = 0; i <= old_mask; i++) {
-			if (old_data[i].l.name) {
-				basicInsert(map, &(old_data[i].l), old_data[i].hash);
-			}
-		}
-		free(old_data);
-	}
-	size_t hash = hashString(entry->name, entry->name_len);
-	basicInsert(map, entry, hash);
-}
 
 // This function is unsafe if buffer is not null terminated
 size_t getIdentifier(char *buffer, String *id) {
@@ -476,7 +407,9 @@ int main(int argc, char **argv) {
 	Block *curr_block = text_segment;
 
 	LabelMap labels;
-	init(&labels);
+	LabelMapInit(&labels);
+	ConstantMap constants;
+	ConstantMapInit(&constants);
 
 	char *buffer = NULL;
 	size_t buffer_size = 0;
@@ -493,7 +426,14 @@ int main(int argc, char **argv) {
 		// dw
 		if (EQUALS(opcode,"dw",2)) {
 			curr_block = makeRoom(curr_block, line_num, 2);
-			if (sscanf(operands, " %hi", (uint16_t*)(curr_block->data + curr_block->size)) != 1) {
+			String value;
+			getIdentifier(operands, &value);
+			Constant *c = ConstantMapGet(&constants, &value);
+			uint16_t *target = curr_block->data + curr_block->size;
+			if (c) {
+				*target = c->val;
+			}
+			else if (sscanf(operands, " %hi", target) != 1) {
 				fprintf(stderr, "Assembler Error (%s:%lu): Directive \"dw\" requires an argument\n", infile_name, line_num);
 				return SYNTAX_ERROR;
 			}
@@ -503,7 +443,14 @@ int main(int argc, char **argv) {
 		// dd
 		else if (EQUALS(opcode,"dd",2)) {
 			curr_block = makeRoom(curr_block, line_num, 4);
-			if (sscanf(operands, " %i", (uint32_t*)(curr_block->data + curr_block->size)) != 1) {
+			String value;
+			getIdentifier(operands, &value);
+			Constant *c = ConstantMapGet(&constants, &value);
+			uint32_t *target = curr_block->data + curr_block->size;
+			if (c) {
+				*target = c->val;
+			}
+			else if (sscanf(operands, " %i", target) != 1) {
 				fprintf(stderr, "Assembler Error (%s:%lu): Directive \"dd\" requires an argument\n", infile_name, line_num);
 				return SYNTAX_ERROR;
 			}
@@ -543,12 +490,40 @@ int main(int argc, char **argv) {
 				return SYNTAX_ERROR;
 			}
 			getIdentifier(s+1, &src);
+			Constant *v = ConstantMapGet(&constants, &src);
 			int8_t encoded_dest = encodeRegister(&dest);
 			if (encoded_dest > 7) {
 				fprintf(stderr, "Assembler Error (%s:%lu): Extended register set not supported\n", infile_name, line_num);
 			}
 
-			// Move from immediate
+			// Move from immediate (constant)
+			else if (v) {
+				int16_t width = getRegisterWidth(&dest);
+				if (width == 8) {
+					curr_block = makeRoom(curr_block, line_num, 2);
+					((uint8_t*)curr_block->data)[curr_block->size] = MOVB_I + encoded_dest;
+					*(int8_t*)(curr_block->data+curr_block->size+1) = v->val;
+					curr_block->size += 2;
+				}
+				if (width == 16) {
+					curr_block = makeRoom(curr_block, line_num, 3);
+					((uint8_t*)curr_block->data)[curr_block->size] = MOVW_I + encoded_dest;
+					*(int16_t*)(curr_block->data+curr_block->size+1) = v->val;
+					curr_block->size += 3;
+				}
+				if (width == 32) {
+					curr_block = makeRoom(curr_block, line_num, 5);
+					((uint8_t*)curr_block->data)[curr_block->size] = MOVL_I + encoded_dest;
+					*(int32_t*)(curr_block->data+curr_block->size+1) = v->val;
+					curr_block->size += 5;
+				}
+				else {
+					fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n", infile_name, line_num, width);
+					return FEATURE_NOT_IMPLEMENTED_YET;
+				}
+			}
+
+			// Move from immediate (literal)
 			else if (isdigit(src.d[0])) {
 				int16_t width = getRegisterWidth(&dest);
 				if (width == 8) {
@@ -651,7 +626,7 @@ int main(int argc, char **argv) {
 			curr_block->size += 2;
 		}
 
-		// Not recognized instruction, check if it's a label
+		// Not recognized instruction, check if it's a label or constant
 		else if (opcode.len) {
 			size_t remaining = n - offset - opcode.len;
 			if (remaining && opcode.d[opcode.len] == ':') {
@@ -671,13 +646,25 @@ int main(int argc, char **argv) {
 				curr_block = new_block;
 				new_label.target = curr_block;
 
-				insert(&labels, &new_label);
+				LabelMapInsert(&labels, &new_label);
 			}
 			else {
-				fprintf(stderr, "Assembler Error (%s:%lu): unknown instruction \"", infile_name, line_num);
-				fwrite((void*)opcode.d, sizeof(char), opcode.len, stderr);
-				fputs("\"\n", stderr);
-				return SYNTAX_ERROR;
+				String equ;
+				getIdentifier(operands, &equ);
+				if (EQUALS(equ,"equ",3)) {
+					Constant new_const;
+					new_const.name = malloc(opcode.len);
+					memcpy(new_const.name, opcode.d, opcode.len);
+					new_const.name_len = opcode.len;
+					sscanf(equ.d+equ.len, " %li", &(new_const.val));
+					ConstantMapInsert(&constants, &new_const);
+				}
+				else {
+					fprintf(stderr, "Assembler Error (%s:%lu): unknown instruction \"", infile_name, line_num);
+					fwrite((void*)opcode.d, sizeof(char), opcode.len, stderr);
+					fputs("\"\n", stderr);
+					return SYNTAX_ERROR;
+				}
 			}
 		}
 
@@ -714,7 +701,7 @@ int main(int argc, char **argv) {
 	for (curr_block = text_segment; curr_block; curr_block = curr_block->next) {
 		curr_block->address += offset;
 		if (curr_block->opcode == SHORT_JMP) {
-			Label *lab = get(&labels, (String*)&(curr_block->data));
+			Label *lab = LabelMapGet(&labels, (String*)&(curr_block->data));
 			if (lab == NULL) {
 				fprintf(stderr, "Assembler Error(%s:%lu): unknown label \"", infile_name, curr_block->line_num);
 				fwrite(curr_block->data, sizeof(char), curr_block->capacity, stderr);
@@ -768,12 +755,12 @@ int main(int argc, char **argv) {
 	String start_str;
 	start_str.d = "_start";
 	start_str.len = 6;
-	Label *start_label = get(&labels, &start_str);
+	Label *start_label = LabelMapGet(&labels, &start_str);
 	if (start_label) {
 		header.entry = start_label->target->address;
 	}
 
-	freeData(&labels);
+	LabelMapFree(&labels);
 
 	size_t segment_size = end->address + end->size;
 
