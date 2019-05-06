@@ -1,6 +1,7 @@
 *.iso
 *.elf
 *.vdi
+*.dbg
 assemble
 assembler
 .attach

@@ -32,5 +32,11 @@ kill: .vm
 clean:
 	chmod +x .deleteDisk.sh
 	./.deleteDisk.sh
-	rm -f *.iso assemble root/boot/*.elf
+	rm -f *.iso assemble root/boot/*.elf assemble.dbg
+
+assemble.dbg: tools/assembler.c
+	gcc -g $< -o $@
+
+debug-build: assemble.dbg
+	gdb $<
 

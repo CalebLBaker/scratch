@@ -22,16 +22,16 @@ _start:
 
 	; Disable old paging
 	mov eax, cr0
-	and eax, 0x7FFFFFFF
+	and eax, PAGING_BIT_BAR
 	mov cr0, eax
 
 	; Clear page tables
-	mov edi, 0x1000     ; Set destination
-	xor eax, eax        ; Clear eax
-	mov ecx, 0x1000     ; Set number of page table entries to clear
-	mov cr3, edi        ; Set cr3 to start of page table
-	rep stosd           ; Clear page tables
-	mov edi, cr3        ; Reset destination
+	mov edi, PAGE_TABLE_START   ; Set destination
+	xor eax, eax                ; Clear eax
+	mov ecx, PAGE_TABLE_ENTRIES ; Set number of page table entries to clear
+	mov cr3, edi                ; Set cr3 to start of page table
+	rep stosd                   ; Clear page tables
+	mov edi, cr3                ; Reset destination
 
 _loop:
 	jmp _loop

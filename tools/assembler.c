@@ -53,7 +53,7 @@ size_t hashString(char *d, size_t len) {
 typedef struct Constant {
 	char   *name;
 	size_t  name_len;
-	size_t  val;
+	ssize_t  val;
 } Constant;
 
 #define DTYPE Constant
@@ -163,6 +163,8 @@ typedef struct ElfProgramHeader {
 	uint64_t    memsz;
 	uint64_t    align;
 } ElfProgramHeader;
+
+ConstantMap constants;
 
 // This function is unsafe if buffer is not null terminated
 size_t getIdentifier(char *buffer, String *id) {
@@ -313,25 +315,33 @@ bool encodeInstruction(Block *curr_block, char *operands, char *infile_name, siz
 		return false;
 	}
 	getIdentifier(s+1, &src);
+	Constant *c = ConstantMapGet(&constants, &src);
 
-	// Immediate source
-	if (isdigit(src.d[0])) {
+	// Immediate or constant source
+	if (c || isdigit(src.d[0])) {
+		ssize_t val;
+		if (c) {
+			val = c->val;
+		}
+		else {
+			sscanf(src.d, "%li", &val);
+		}
 		if (EQUALS(dest,"al",2)) {
 			curr_block = makeRoom(curr_block, line_num, 2);
 			((uint8_t*)curr_block->data)[curr_block->size] = opcode | AL_I;
-			sscanf(src.d, "%hhi", (int8_t*)(curr_block->data+curr_block->size+1));
+			*((int8_t*)(curr_block->data + curr_block->size + 1)) = (int8_t)val;
 			curr_block->size += 2;
 		}
 		else if (EQUALS(dest,"ax",2)) {
 			curr_block = makeRoom(curr_block, line_num, 3);
 			((uint8_t*)curr_block->data)[curr_block->size] = opcode | AX_I;
-			sscanf(src.d, "%hi", (int16_t*)(curr_block->data+curr_block->size+1));
+			*((int16_t*)(curr_block->data + curr_block->size + 1)) = (int16_t)val;
 			curr_block->size += 3;
 		}
 		else if (EQUALS(dest,"eax",3)) {
 			curr_block = makeRoom(curr_block, line_num, 5);
 			((uint8_t*)curr_block->data)[curr_block->size] = opcode | EAX_I;
-			sscanf(src.d, "%i", (int32_t*)(curr_block->data+curr_block->size+1));
+			*((int32_t*)(curr_block->data + curr_block->size + 1)) = (int32_t)val;
 			curr_block->size += 5;
 		}
 		else {
@@ -408,7 +418,6 @@ int main(int argc, char **argv) {
 
 	LabelMap labels;
 	LabelMapInit(&labels);
-	ConstantMap constants;
 	ConstantMapInit(&constants);
 
 	char *buffer = NULL;
