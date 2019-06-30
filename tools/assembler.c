@@ -10,7 +10,8 @@
 // or a single control flow instruction
 typedef struct Block {
 	void   *next;		// Pointer to next block
-	void   *data;		// For multi-instruction blocks, the encoded instructions; For single instructions, the target label
+	void   *data;		// For multi-instruction blocks, the encoded instructions;
+	                    // For single instructions, the target label
 	size_t  capacity;	// Capacity of buffer pointed to by data
 	size_t  size;		// Size of the block
 	size_t  address;	// Starting address of the block
@@ -30,6 +31,9 @@ typedef struct Label {
 	char   *name;
 	size_t  name_len;
 } Label;
+
+typedef struct Address {
+};
 
 size_t hashString(char *d, size_t len) {
 	size_t hash = 5381;
@@ -109,6 +113,18 @@ typedef struct Constant {
 #define MOVW_I 0xB8
 #define MOVL_I 0xB8
 
+#define STB_I 0xC6
+#define STW_I 0xC7
+#define STL_I 0xC7
+
+#define IB 0x80
+#define IW 0x81
+#define IL 0x81
+
+#define REG_DEST 0xC0
+
+#define ADD 0x00
+#define OR  0x08
 #define AND 0x20
 #define XOR 0x30
 
@@ -166,7 +182,12 @@ typedef struct ElfProgramHeader {
 
 ConstantMap constants;
 
-// This function is unsafe if buffer is not null terminated
+/*
+ * Reads an identifier from a character buffer, ignoring whitespace
+ * Param buffer: character buffer that the identifier is read from (must be null or space terminated)
+ * Param id:     output variable that will be set to the identifier
+ * Returns:      The number of skipped whitespace characters at the front of buffer
+*/
 size_t getIdentifier(char *buffer, String *id) {
 	size_t ret = 0;
 	for (id->d = buffer; isspace(*id->d); id->d++) ret++;
@@ -306,7 +327,8 @@ int8_t encodeRegister(String *r) {
 	}
 }
 
-bool encodeInstruction(Block *curr_block, char *operands, char *infile_name, size_t line_num, uint8_t opcode) {
+bool encodeInstruction(Block *curr_block, char *operands, char *infile_name,
+                       size_t line_num, uint8_t opcode) {
 	String src, dest;
 	getIdentifier(operands, &dest);
 	char *s = dest.d + dest.len;
@@ -345,8 +367,39 @@ bool encodeInstruction(Block *curr_block, char *operands, char *infile_name, siz
 			curr_block->size += 5;
 		}
 		else {
-			fprintf(stderr, "Assembler Error (%s:%lu): Destination register other than eax not supported\n", infile_name, line_num);
-			return false;
+			int8_t instruction_size;
+			int8_t dest_reg = encodeRegister(&dest);
+			switch(getRegisterWidth(&dest)) {
+				case 8: {
+					curr_block = makeRoom(curr_block, line_num, 3);
+					int16_t inst = ((int16_t)(REG_DEST | opcode | dest_reg) << 8) | IB;
+					*((int16_t*)(curr_block->data + curr_block->size)) = inst;
+					*((int8_t*)(curr_block->data + curr_block->size + 2)) = (int8_t)val;
+					curr_block->size += 3;
+					break;
+				}
+				case 16: {
+					curr_block = makeRoom(curr_block, line_num, 4);
+					int16_t inst = ((int16_t)(REG_DEST | opcode | dest_reg) << 8) | IW;
+					*((int16_t*)(curr_block->data + curr_block->size)) = inst;
+					*((int16_t*)(curr_block->data + curr_block->size + 2)) = (int16_t)val;
+					curr_block->size += 4;
+					break;
+				}
+				case 32: {
+					curr_block = makeRoom(curr_block, line_num, 6);
+					int16_t inst = ((int16_t)(REG_DEST | opcode | dest_reg) << 8) | IL;
+					*((int16_t*)(curr_block->data + curr_block->size)) = inst;
+					*((int32_t*)(curr_block->data + curr_block->size + 2)) = (int32_t)val;
+					curr_block->size += 6;
+					break;
+				}
+				default: {
+					printf("Assembler Error(%s:%lu): Unsupported register width\n",
+					       infile_name, line_num);
+					return false;
+				}
+			}
 		}
 	}
 
@@ -379,6 +432,32 @@ bool encodeInstruction(Block *curr_block, char *operands, char *infile_name, siz
 		}
 		((uint8_t*)curr_block->data)[curr_block->size+1] = operands;
 		curr_block->size += 2;
+	}
+	return true;
+}
+
+bool moveConstant(Block *curr_block, char *infile_name, size_t line_num, size_t value, int16_t width, int8_t encoded_dest) {
+	if (width == 8) {
+		curr_block = makeRoom(curr_block, line_num, 2);
+		((uint8_t*)curr_block->data)[curr_block->size] = MOVB_I + encoded_dest;
+		*(int8_t*)(curr_block->data+curr_block->size+1) = value;
+		curr_block->size += 2;
+	}
+	else if (width == 16) {
+		curr_block = makeRoom(curr_block, line_num, 3);
+		((uint8_t*)curr_block->data)[curr_block->size] = MOVW_I + encoded_dest;
+		*(int16_t*)(curr_block->data+curr_block->size+1) = value;
+		curr_block->size += 3;
+	}
+	else if (width == 32) {
+		curr_block = makeRoom(curr_block, line_num, 5);
+		((uint8_t*)curr_block->data)[curr_block->size] = MOVL_I + encoded_dest;
+		*(int32_t*)(curr_block->data+curr_block->size+1) = value;
+		curr_block->size += 5;
+	}
+	else {
+		fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n", infile_name, line_num, width);
+		return false;
 	}
 	return true;
 }
@@ -493,48 +572,103 @@ int main(int argc, char **argv) {
 		else if (EQUALS(opcode,"mov",3)) {
 			String src, dest;
 			getIdentifier(operands, &dest);
+			int16_t width;
+			bool store = EQUALS(dest,"DWORD",5);
+			int8_t encoded_dest;
 			char *s = dest.d + dest.len;
+			if (store) {
+				width = 32;
+				while (isspace(*s)) s++;
+				if (*s != '[') {
+					fprintf(stderr, "Assembler Error (%s:%lu): Invalid Address Format\n", infile_name, line_num);
+					return SYNTAX_ERROR;
+				}
+				s++;
+				String reg;
+				s += getIdentifier(s, &reg);
+				s += reg.len;
+				encoded_dest = encodeRegister(&reg);
+				while (isspace(*s)) s++;
+				if (*s != ']') {
+					fprintf(stderr, "Assembler Error (%s,%lu): Invalid Address Format\n", infile_name, line_num);
+					return SYNTAX_ERROR;
+				}
+				s++;
+			}
+			else {
+				width = getRegisterWidth(&dest);
+				encoded_dest = encodeRegister(&dest);
+			}
 			if (*s != ',') {
 				fprintf(stderr, "Assembler Error (%s:%lu): Expected comma\n", infile_name, line_num);
 				return SYNTAX_ERROR;
 			}
 			getIdentifier(s+1, &src);
 			Constant *v = ConstantMapGet(&constants, &src);
-			int8_t encoded_dest = encodeRegister(&dest);
 			if (encoded_dest > 7) {
-				fprintf(stderr, "Assembler Error (%s:%lu): Extended register set not supported\n", infile_name, line_num);
+				fprintf(stderr, "Assembler Error (%s:%lu): Extended register set not supported\n",
+				        infile_name, line_num);
+				return FEATURE_NOT_IMPLEMENTED_YET;
+			}
+			else if (store) {
+
+				// Store from constant
+				if (v) {
+					switch (width) {
+						case 8: {
+							curr_block = makeRoom(curr_block, line_num, 3);
+							uint16_t inst = ((int16_t)encoded_dest << 8) | STB_I;
+							*(uint16_t*)(curr_block->data+curr_block->size) = inst;
+							*(int8_t*)(curr_block->data+curr_block->size+2) = (int8_t)(v->val);
+							curr_block->size += 3;
+							break;
+						}
+						case 16: {
+							curr_block = makeRoom(curr_block, line_num, 4);
+							uint16_t inst = ((int16_t)encoded_dest << 8) | STW_I;
+							*(uint16_t*)(curr_block->data+curr_block->size) = inst;
+							*(int16_t*)(curr_block->data+curr_block->size+2) = (int16_t)(v->val);
+							curr_block->size += 4;
+							break;
+						}
+						case 32: {
+							curr_block = makeRoom(curr_block, line_num, 6);
+							uint16_t inst = ((int16_t)encoded_dest << 8) | STL_I;
+							*(uint16_t*)(curr_block->data+curr_block->size) = inst;
+							*(int32_t*)(curr_block->data+curr_block->size+2) = (int32_t)(v->val);
+							curr_block->size += 6;
+							break;
+						}
+						default: {
+							fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n",
+									infile_name, line_num, width);
+							return false;
+						}
+					}
+				}
+				else {
+					fprintf(stderr,
+					        "Assembler Error (%s:%lu): Storing from non-constant not supported\n",
+							infile_name, line_num);
+					return FEATURE_NOT_IMPLEMENTED_YET;
+				}
+				//else if (isdigit(src.d[0])) {
+				//else if (true) {}
+
+				// Store from literal
+
+				// Store from register
 			}
 
 			// Move from immediate (constant)
 			else if (v) {
-				int16_t width = getRegisterWidth(&dest);
-				if (width == 8) {
-					curr_block = makeRoom(curr_block, line_num, 2);
-					((uint8_t*)curr_block->data)[curr_block->size] = MOVB_I + encoded_dest;
-					*(int8_t*)(curr_block->data+curr_block->size+1) = v->val;
-					curr_block->size += 2;
-				}
-				if (width == 16) {
-					curr_block = makeRoom(curr_block, line_num, 3);
-					((uint8_t*)curr_block->data)[curr_block->size] = MOVW_I + encoded_dest;
-					*(int16_t*)(curr_block->data+curr_block->size+1) = v->val;
-					curr_block->size += 3;
-				}
-				if (width == 32) {
-					curr_block = makeRoom(curr_block, line_num, 5);
-					((uint8_t*)curr_block->data)[curr_block->size] = MOVL_I + encoded_dest;
-					*(int32_t*)(curr_block->data+curr_block->size+1) = v->val;
-					curr_block->size += 5;
-				}
-				else {
-					fprintf(stderr, "Assembler Error (%s:%lu): Unsupported width: %hi\n", infile_name, line_num, width);
+				if (!moveConstant(curr_block, infile_name, line_num, v->val, width, encoded_dest)) {
 					return FEATURE_NOT_IMPLEMENTED_YET;
 				}
 			}
 
 			// Move from immediate (literal)
 			else if (isdigit(src.d[0])) {
-				int16_t width = getRegisterWidth(&dest);
 				if (width == 8) {
 					curr_block = makeRoom(curr_block, line_num, 2);
 					((uint8_t*)curr_block->data)[curr_block->size] = MOVB_I + encoded_dest;
@@ -608,6 +742,12 @@ int main(int argc, char **argv) {
 
 		else if (EQUALS(opcode,"and",3)) {
 			if (!encodeInstruction(curr_block, operands, infile_name, line_num, AND)) {
+				return ERROR;
+			}
+		}
+
+		else if (EQUALS(opcode,"add",3)) {
+			if (!encodeInstruction(curr_block, operands, infile_name, line_num, ADD)) {
 				return ERROR;
 			}
 		}

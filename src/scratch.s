@@ -3,6 +3,13 @@ MULTIBOOT_CHECKSUM equ 0x17ADAF1A
 PAGING_BIT_BAR equ 0x7FFFFFFF
 PAGE_TABLE_START equ 0x1000
 PAGE_TABLE_ENTRIES equ 0x1000
+PAGE_TABLE_SIZE equ 0x1000
+
+; Address of first table of a type OR'd with 3
+; 3 represents present and readable
+PDPT equ 0x2003
+PDT equ 0x3003
+PT equ 0x4003
 
 [bits 32]
 ; Multiboot header
@@ -32,6 +39,14 @@ _start:
 	mov cr3, edi                ; Set cr3 to start of page table
 	rep stosd                   ; Clear page tables
 	mov edi, cr3                ; Reset destination
+
+	; Populate the first entry of each table
+	mov DWORD [edi], PDPT
+	add edi, PAGE_TABLE_SIZE
+	mov DWORD [edi], PDT
+	add edi, PAGE_TABLE_SIZE
+	mov DWORD [edi], PT
+	add edi, PAGE_TABLE_SIZE
 
 _loop:
 	jmp _loop
