@@ -3,13 +3,18 @@ MULTIBOOT_CHECKSUM equ 0x17ADAF1A
 PAGING_BIT_BAR equ 0x7FFFFFFF
 PAGE_TABLE_START equ 0x1000
 PAGE_TABLE_ENTRIES equ 0x1000
-PAGE_TABLE_SIZE equ 0x1000
+PAGE_SIZE equ 0x1000
 
 ; Address of first table of a type OR'd with 3
 ; 3 represents present and readable
 PDPT equ 0x2003
 PDT equ 0x3003
 PT equ 0x4003
+
+; These parameters will identity map the first 2 Megabytes
+MEM_START equ 3		; Address (OR'd with 3 of first mapped physical memory
+NUM_PAGES equ 0x200 ; Number of memory pages
+
 
 [bits 32]
 ; Multiboot header
@@ -42,12 +47,22 @@ _start:
 
 	; Populate the first entry of each table
 	mov DWORD [edi], PDPT
-	add edi, PAGE_TABLE_SIZE
+	add edi, PAGE_SIZE
 	mov DWORD [edi], PDT
-	add edi, PAGE_TABLE_SIZE
+	add edi, PAGE_SIZE
 	mov DWORD [edi], PT
-	add edi, PAGE_TABLE_SIZE
 
-_loop:
-	jmp _loop
+	; Populate first page table
+	add edi, PAGE_SIZE
+	mov ebx, MEM_START
+	mov ecx, NUM_PAGES
+initPageTables:
+	mov [edi], ebx
+	add ebx, PAGE_SIZE
+	add edi, 8
+	dec ecx
+	jnz initPageTables
+
+loop:
+	jmp loop
 
