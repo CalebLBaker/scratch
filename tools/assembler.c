@@ -132,6 +132,9 @@ typedef struct Constant {
 
 #define DEC 0x48
 
+#define RDMSR 0x320f
+#define WRMSR 0x300f
+
 #define REP_STOSB 0xAAF3
 #define REP_STOSW 0xABF3
 #define REP_STOSD 0xABF3
@@ -189,6 +192,7 @@ ConstantMap constants;
 char *infile_name = NULL;
 size_t line_num = 0;
 bool long_mode = true;
+Block *curr_block = NULL;
 
 /*
  * Reads an identifier from a character buffer, ignoring whitespace
@@ -206,7 +210,7 @@ size_t getIdentifier(char *buffer, String *id) {
 	return ret;
 }
 
-Block* makeRoom(Block *curr_block, size_t size) {
+Block* makeRoom(size_t size) {
 	if (curr_block->opcode != BLOCK) {
 		Block *n = malloc(sizeof(Block));
 		n->next = NULL;
@@ -227,8 +231,9 @@ Block* makeRoom(Block *curr_block, size_t size) {
 	return curr_block;
 }
 
-size_t setJmpOperand(Block *curr_block) {
-	curr_block->operand = ((Block*)(curr_block->data))->address - curr_block->address - curr_block->size;
+size_t setJmpOperand() {
+	Block *target = (Block*)(curr_block->data);
+	curr_block->operand = target->address - curr_block->address - curr_block->size;
 	int16_t op = curr_block->opcode;
 	if (curr_block->operand > INT8_MAX && (op == SHORT_JMP || op == SHORT_JNZ)) {
 		size_t ret;
@@ -346,7 +351,7 @@ int8_t encodeRegister(String *r) {
 	}
 }
 
-bool encodeInstruction(Block *curr_block, char *operands, uint8_t opcode) {
+bool encodeInstruction(char *operands, uint8_t opcode) {
 	String src, dest;
 	getIdentifier(operands, &dest);
 	char *s = dest.d + dest.len;
@@ -367,19 +372,19 @@ bool encodeInstruction(Block *curr_block, char *operands, uint8_t opcode) {
 			sscanf(src.d, "%li", &val);
 		}
 		if (EQUALS(dest,"al",2)) {
-			curr_block = makeRoom(curr_block, 2);
+			curr_block = makeRoom(2);
 			((uint8_t*)curr_block->data)[curr_block->size] = opcode | AL_I;
 			*((int8_t*)(curr_block->data + curr_block->size + 1)) = (int8_t)val;
 			curr_block->size += 2;
 		}
 		else if (EQUALS(dest,"ax",2)) {
-			curr_block = makeRoom(curr_block, 3);
+			curr_block = makeRoom(3);
 			((uint8_t*)curr_block->data)[curr_block->size] = opcode | AX_I;
 			*((int16_t*)(curr_block->data + curr_block->size + 1)) = (int16_t)val;
 			curr_block->size += 3;
 		}
 		else if (EQUALS(dest,"eax",3)) {
-			curr_block = makeRoom(curr_block, 5);
+			curr_block = makeRoom(5);
 			((uint8_t*)curr_block->data)[curr_block->size] = opcode | EAX_I;
 			*((int32_t*)(curr_block->data + curr_block->size + 1)) = (int32_t)val;
 			curr_block->size += 5;
@@ -389,7 +394,7 @@ bool encodeInstruction(Block *curr_block, char *operands, uint8_t opcode) {
 			int8_t dest_reg = encodeRegister(&dest);
 			switch(getRegisterWidth(&dest)) {
 				case 8: {
-					curr_block = makeRoom(curr_block, 3);
+					curr_block = makeRoom(3);
 					int16_t inst = ((int16_t)(REG_DEST | opcode | dest_reg) << 8) | IB;
 					*((int16_t*)(curr_block->data + curr_block->size)) = inst;
 					*((int8_t*)(curr_block->data + curr_block->size + 2)) = (int8_t)val;
@@ -397,7 +402,7 @@ bool encodeInstruction(Block *curr_block, char *operands, uint8_t opcode) {
 					break;
 				}
 				case 16: {
-					curr_block = makeRoom(curr_block, 4);
+					curr_block = makeRoom(4);
 					int16_t inst = ((int16_t)(REG_DEST | opcode | dest_reg) << 8) | IW;
 					*((int16_t*)(curr_block->data + curr_block->size)) = inst;
 					*((int16_t*)(curr_block->data + curr_block->size + 2)) = (int16_t)val;
@@ -405,7 +410,7 @@ bool encodeInstruction(Block *curr_block, char *operands, uint8_t opcode) {
 					break;
 				}
 				case 32: {
-					curr_block = makeRoom(curr_block, 6);
+					curr_block = makeRoom(6);
 					int16_t inst = ((int16_t)(REG_DEST | opcode | dest_reg) << 8) | IL;
 					*((int16_t*)(curr_block->data + curr_block->size)) = inst;
 					*((int32_t*)(curr_block->data + curr_block->size + 2)) = (int32_t)val;
@@ -438,7 +443,7 @@ bool encodeInstruction(Block *curr_block, char *operands, uint8_t opcode) {
 		}
 		int8_t operands = DIRECT | (encoded_src << 3) | encoded_dest;
 		int16_t width = getRegisterWidth(&dest);
-		curr_block = makeRoom(curr_block, 2);
+		curr_block = makeRoom(2);
 		if (width == 8) {
 			((uint8_t*)curr_block->data)[curr_block->size] = opcode;
 		}
@@ -456,21 +461,21 @@ bool encodeInstruction(Block *curr_block, char *operands, uint8_t opcode) {
 }
 
 
-bool moveConstant(Block *curr_block, size_t value, int16_t width, int8_t encoded_dest) {
+bool moveConstant(size_t value, int16_t width, int8_t encoded_dest) {
 	if (width == 8) {
-		curr_block = makeRoom(curr_block, 2);
+		curr_block = makeRoom(2);
 		((uint8_t*)curr_block->data)[curr_block->size] = MOVB_I + encoded_dest;
 		*(int8_t*)(curr_block->data+curr_block->size+1) = value;
 		curr_block->size += 2;
 	}
 	else if (width == 16) {
-		curr_block = makeRoom(curr_block, 3);
+		curr_block = makeRoom(3);
 		((uint8_t*)curr_block->data)[curr_block->size] = MOVW_I + encoded_dest;
 		*(int16_t*)(curr_block->data+curr_block->size+1) = value;
 		curr_block->size += 3;
 	}
 	else if (width == 32) {
-		curr_block = makeRoom(curr_block, 5);
+		curr_block = makeRoom(5);
 		((uint8_t*)curr_block->data)[curr_block->size] = MOVL_I + encoded_dest;
 		*(int32_t*)(curr_block->data+curr_block->size+1) = value;
 		curr_block->size += 5;
@@ -492,8 +497,7 @@ bool moveConstant(Block *curr_block, size_t value, int16_t width, int8_t encoded
  * Param addressing_mode: The value for the MOD bits (11 for move, 00 for store)
  * Returns:               true if the move was successfully encoded
  */
-bool moveRegister(Block *curr_block, String *src, String *dest, int8_t encoded_dest,
-                  int8_t addressing_mode) {
+bool moveRegister(String *src, String *dest, int8_t encoded_dest, int8_t addressing_mode) {
 
 	int8_t encoded_src = encodeRegister(src);
 	
@@ -515,14 +519,14 @@ bool moveRegister(Block *curr_block, String *src, String *dest, int8_t encoded_d
 
 	// To/From control registers
 	if (!strncmp(src->d, "cr", 2)) {
-		curr_block = makeRoom(curr_block, 3);
+		curr_block = makeRoom(3);
 		uint16_t *d = curr_block->data + curr_block->size;
 		*d = MOV_R_CR;
 		*(uint8_t*)(d+1) = DIRECT | (encoded_src << 3) | encoded_dest;
 		curr_block->size += 3;
 	}
 	else if (!strncmp(dest->d, "cr", 2)) {
-		curr_block = makeRoom(curr_block, 3);
+		curr_block = makeRoom(3);
 		uint16_t *d = curr_block->data + curr_block->size;
 		*d = MOV_CR_R;
 		*(uint8_t*)(d+1) = DIRECT | (encoded_dest << 3) | encoded_src;
@@ -531,7 +535,7 @@ bool moveRegister(Block *curr_block, String *src, String *dest, int8_t encoded_d
 
 	// Regular registers
 	else {
-		curr_block = makeRoom(curr_block, 2);
+		curr_block = makeRoom(2);
 		int16_t width = getRegisterWidth(dest);
 		if (width == 8) {
 			((uint8_t*)curr_block->data)[curr_block->size] = MOVB;
@@ -564,7 +568,7 @@ bool moveRegister(Block *curr_block, String *src, String *dest, int8_t encoded_d
  * Param opcode:     The instruction opcode
  * Returns:          The new block to write to
 */
-Block* encodeJump(Block *curr_block, char *dest, uint8_t opcode) {
+Block* encodeJump(char *dest, uint8_t opcode) {
 	if (curr_block->capacity) {
 		Block *new_block = malloc(sizeof(Block));
 		new_block->next = NULL;
@@ -617,7 +621,7 @@ int main(int argc, char **argv) {
 	}
 
 	Block *text_segment = calloc(1, sizeof(Block));
-	Block *curr_block = text_segment;
+	curr_block = text_segment;
 
 	LabelMap labels;
 	LabelMapInit(&labels);
@@ -634,9 +638,28 @@ int main(int argc, char **argv) {
 		size_t offset = getIdentifier(buffer, &opcode);
 		char *operands = opcode.d + opcode.len;
 
+		// db
+		if (EQUALS(opcode,"db",2)) {
+			curr_block = makeRoom(1);
+			String value;
+			getIdentifier(operands, &value);
+			Constant *c = ConstantMapGet(&constants, &value);
+			uint8_t *target = curr_block->data + curr_block->size;
+			if (c) {
+				*target = c->val;
+			}
+			else if (sscanf(operands, " %hhi", target) != 1) {
+				fprintf(stderr,
+				        "Assembler Error (%s:%lu): Directive \"db\" requires an argument\n",
+						infile_name, line_num);
+				return SYNTAX_ERROR;
+			}
+			curr_block->size += 1;
+		}
+
 		// dw
-		if (EQUALS(opcode,"dw",2)) {
-			curr_block = makeRoom(curr_block, 2);
+		else if (EQUALS(opcode,"dw",2)) {
+			curr_block = makeRoom(2);
 			String value;
 			getIdentifier(operands, &value);
 			Constant *c = ConstantMapGet(&constants, &value);
@@ -653,7 +676,7 @@ int main(int argc, char **argv) {
 
 		// dd
 		else if (EQUALS(opcode,"dd",2)) {
-			curr_block = makeRoom(curr_block, 4);
+			curr_block = makeRoom(4);
 			String value;
 			getIdentifier(operands, &value);
 			Constant *c = ConstantMapGet(&constants, &value);
@@ -668,14 +691,33 @@ int main(int argc, char **argv) {
 			curr_block->size += 4;
 		}
 
+		// dq
+		else if (EQUALS(opcode,"dq",2)) {
+			curr_block = makeRoom(8);
+			String value;
+			getIdentifier(operands, &value);
+			Constant *c = ConstantMapGet(&constants, &value);
+			uint8_t *target = curr_block->data + curr_block->size;
+			if (c) {
+				*target = c->val;
+			}
+			else if (sscanf(operands, " %lli", target) != 1) {
+				fprintf(stderr,
+				        "Assembler Error (%s:%lu): Directive \"dq\" requires an argument\n",
+						infile_name, line_num);
+				return SYNTAX_ERROR;
+			}
+			curr_block->size += 8;
+		}
+
 		// jmp
 		else if (EQUALS(opcode,"jmp",3)) {
-			curr_block = encodeJump(curr_block, operands, SHORT_JMP);
+			curr_block = encodeJump(operands, SHORT_JMP);
 		}
 
 		// jnz
 		else if (EQUALS(opcode,"jnz",3)) {
-			curr_block = encodeJump(curr_block, operands, SHORT_JNZ);
+			curr_block = encodeJump(operands, SHORT_JNZ);
 		}
 
 		// mov
@@ -727,7 +769,7 @@ int main(int argc, char **argv) {
 				if (v) {
 					switch (width) {
 						case 8: {
-							curr_block = makeRoom(curr_block, 3);
+							curr_block = makeRoom(3);
 							uint16_t inst = ((int16_t)encoded_dest << 8) | STB_I;
 							*(uint16_t*)(curr_block->data+curr_block->size) = inst;
 							*(int8_t*)(curr_block->data+curr_block->size+2) = (int8_t)(v->val);
@@ -735,7 +777,7 @@ int main(int argc, char **argv) {
 							break;
 						}
 						case 16: {
-							curr_block = makeRoom(curr_block, 4);
+							curr_block = makeRoom(4);
 							uint16_t inst = ((int16_t)encoded_dest << 8) | STW_I;
 							*(uint16_t*)(curr_block->data+curr_block->size) = inst;
 							*(int16_t*)(curr_block->data+curr_block->size+2) = (int16_t)(v->val);
@@ -743,7 +785,7 @@ int main(int argc, char **argv) {
 							break;
 						}
 						case 32: {
-							curr_block = makeRoom(curr_block, 6);
+							curr_block = makeRoom(6);
 							uint16_t inst = ((int16_t)encoded_dest << 8) | STL_I;
 							*(uint16_t*)(curr_block->data+curr_block->size) = inst;
 							*(int32_t*)(curr_block->data+curr_block->size+2) = (int32_t)(v->val);
@@ -766,7 +808,7 @@ int main(int argc, char **argv) {
 
 				// Store from register
 				else {
-					if (!moveRegister(curr_block, &src, &dest, encoded_dest, INDIRECT)) {
+					if (!moveRegister(&src, &dest, encoded_dest, INDIRECT)) {
 						return SYNTAX_ERROR;
 					}
 				}
@@ -774,7 +816,7 @@ int main(int argc, char **argv) {
 
 			// Move from immediate (constant)
 			else if (v) {
-				if (!moveConstant(curr_block, v->val, width, encoded_dest)) {
+				if (!moveConstant(v->val, width, encoded_dest)) {
 					return FEATURE_NOT_IMPLEMENTED_YET;
 				}
 			}
@@ -782,19 +824,19 @@ int main(int argc, char **argv) {
 			// Move from immediate (literal)
 			else if (isdigit(src.d[0])) {
 				if (width == 8) {
-					curr_block = makeRoom(curr_block, 2);
+					curr_block = makeRoom(2);
 					((uint8_t*)curr_block->data)[curr_block->size] = MOVB_I + encoded_dest;
 					sscanf(src.d, "%hhi", (int8_t*)(curr_block->data+curr_block->size+1));
 					curr_block->size += 2;
 				}
 				else if (width == 16) {
-					curr_block = makeRoom(curr_block, 3);
+					curr_block = makeRoom(3);
 					((uint8_t*)curr_block->data)[curr_block->size] = MOVW_I + encoded_dest;
 					sscanf(src.d, "%hi", (int16_t*)(curr_block->data+curr_block->size+1));
 					curr_block->size += 3;
 				}
 				else if (width == 32) {
-					curr_block = makeRoom(curr_block, 5);
+					curr_block = makeRoom(5);
 					((uint8_t*)curr_block->data)[curr_block->size] = MOVL_I + encoded_dest;
 					sscanf(src.d, "%i", (int32_t*)(curr_block->data+curr_block->size+1));
 					curr_block->size += 5;
@@ -807,32 +849,38 @@ int main(int argc, char **argv) {
 
 			// Move from register
 			else {
-				if (!moveRegister(curr_block, &src, &dest, encoded_dest, DIRECT)) {
+				if (!moveRegister(&src, &dest, encoded_dest, DIRECT)) {
 					return SYNTAX_ERROR;
 				}
 			}
 		}
 
 		else if (EQUALS(opcode,"and",3)) {
-			if (!encodeInstruction(curr_block, operands, AND)) {
+			if (!encodeInstruction(operands, AND)) {
 				return ERROR;
 			}
 		}
 
 		else if (EQUALS(opcode,"add",3)) {
-			if (!encodeInstruction(curr_block, operands, ADD)) {
+			if (!encodeInstruction(operands, ADD)) {
 				return ERROR;
 			}
 		}
 
 		else if (EQUALS(opcode,"xor",3)) {
-			if (!encodeInstruction(curr_block, operands, XOR)) {
+			if (!encodeInstruction(operands, XOR)) {
+				return ERROR;
+			}
+		}
+
+		else if (EQUALS(opcode,"or",2)) {
+			if (!encodeInstruction(operands, OR)) {
 				return ERROR;
 			}
 		}
 
 		else if (EQUALS(opcode,"dec",3)) {
-			curr_block = makeRoom(curr_block, 1);
+			curr_block = makeRoom(1);
 			String dest;
 			getIdentifier(operands, &dest);
 			uint8_t encoded_dest = encodeRegister(&dest);
@@ -843,7 +891,7 @@ int main(int argc, char **argv) {
 		else if (EQUALS(opcode,"rep",3)) {
 			String command;
 			getIdentifier(operands, &command);
-			curr_block = makeRoom(curr_block, 2);
+			curr_block = makeRoom(2);
 			if (EQUALS(command,"stosb",5)) {
 				*(int16_t*)(curr_block->data+curr_block->size) = REP_STOSB;
 			}
@@ -854,6 +902,18 @@ int main(int argc, char **argv) {
 				fprintf(stderr, "Assembler Error (%s:%lu): Unsuported instruction: %s\n", infile_name, line_num, opcode);
 				return FEATURE_NOT_IMPLEMENTED_YET;
 			}
+			curr_block->size += 2;
+		}
+
+		else if (EQUALS(opcode,"rdmsr",5)) {
+			curr_block = makeRoom(2);
+			*(int16_t*)(curr_block->data+curr_block->size) = RDMSR;
+			curr_block->size += 2;
+		}
+
+		else if (EQUALS(opcode,"wrmsr",5)) {
+			curr_block = makeRoom(2);
+			*(int16_t*)(curr_block->data+curr_block->size) = WRMSR;
 			curr_block->size += 2;
 		}
 
